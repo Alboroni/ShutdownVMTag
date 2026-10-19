@@ -6,11 +6,28 @@ Creates a resource group, Automation account, runbook and weekday VM schedulers.
 Run from your workstation or Cloud Shell after Connect-AzAccount.
 Creates Azure resources and RBAC assignments only when you execute this script.
 Requires resource deployment and role-assignment rights on the deployment
-subscription and target VM resource group. Targets existing VMs, not new VMs.
+subscription and target VM scope. Targets existing VMs, not new VMs.
+By default, matches tagged VMs across every resource group in the VM subscription.
 VmSubscriptionId can select a different VM subscription in the same Entra tenant.
+Omit VmSubscriptionId when all resources are in one subscription.
 Defaults to disabled Logic Apps and preview-only VM operations.
+See README.md for the complete setup, testing and activation guide.
+.PARAMETER VmSubscriptionId
+Subscription containing the existing VMs. Defaults to SubscriptionId, so no
+override is needed for a single-subscription deployment.
+.PARAMETER VmResourceGroupName
+Optional restriction to one existing VM resource group. Omit to search every
+resource group and grant the Automation identity VM permissions at subscription scope.
 .EXAMPLE
-.\Deploy-VmSchedule.ps1 -SubscriptionId '00000000-0000-0000-0000-000000000001' -ResourceGroupName 'rg-vm-schedule' -Location 'uksouth' -AutomationAccountName 'aa-vm-schedule' -VmResourceGroupName 'rg-dev-vms' -ScheduleStartTime '2026-11-02T00:00:00'
+.\Deploy-VmSchedule.ps1 -SubscriptionId '00000000-0000-0000-0000-000000000001' -ResourceGroupName 'rg-vm-schedule' -Location 'uksouth' -AutomationAccountName 'aa-vm-schedule' -ScheduleStartTime '2026-11-02T00:00:00'
+
+Deploys scheduling resources and targets matching VMs in all groups in the same subscription.
+Replace ScheduleStartTime with a future UK local date/time before running.
+.EXAMPLE
+.\Deploy-VmSchedule.ps1 -SubscriptionId '00000000-0000-0000-0000-000000000001' -VmSubscriptionId '00000000-0000-0000-0000-000000000002' -ResourceGroupName 'rg-vm-schedule' -Location 'uksouth' -AutomationAccountName 'aa-vm-schedule' -ScheduleStartTime '2026-11-02T00:00:00'
+
+Hosts the scheduler in one subscription and targets VMs in another, in the same tenant.
+Replace ScheduleStartTime with a future UK local date/time before running.
 #>
 [CmdletBinding()]
 param(
@@ -29,9 +46,9 @@ param(
     [ValidatePattern('^[a-zA-Z][a-zA-Z0-9-]{4,48}[a-zA-Z0-9]$')]
     [string] $AutomationAccountName,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string] $VmResourceGroupName,
+    [string] $VmResourceGroupName = '',
 
     [guid] $VmSubscriptionId = $SubscriptionId,
 
@@ -72,10 +89,18 @@ if ($null -eq $currentContext) {
 $context = Set-AzContext -SubscriptionId $SubscriptionId.ToString() -TenantId $currentContext.Tenant.Id -Scope Process -ErrorAction Stop
 $vmContext = Set-AzContext -SubscriptionId $VmSubscriptionId.ToString() -TenantId $context.Tenant.Id -Scope Process -ErrorAction Stop
 $subscriptionScope = "/subscriptions/$SubscriptionId"
-$vmScope = "/subscriptions/$VmSubscriptionId/resourceGroups/$VmResourceGroupName"
-$vmGroup = Get-AzResourceGroup -Name $VmResourceGroupName -DefaultProfile $vmContext -ErrorAction Stop
-if ($null -eq $vmGroup) {
-    throw "Target VM resource group '$VmResourceGroupName' was not found."
+$vmScope = "/subscriptions/$VmSubscriptionId"
+$vmTargetDescription = "all resource groups in subscription '$VmSubscriptionId'"
+if ($PSBoundParameters.ContainsKey('VmResourceGroupName')) {
+    $vmScope += "/resourceGroups/$VmResourceGroupName"
+    $vmTargetDescription = "resource group '$VmResourceGroupName' in subscription '$VmSubscriptionId'"
+    $vmGroup = Get-AzResourceGroup -Name $VmResourceGroupName -DefaultProfile $vmContext -ErrorAction Stop
+    if ($null -eq $vmGroup) {
+        throw "Target VM resource group '$VmResourceGroupName' was not found."
+    }
+}
+else {
+    Write-Warning "Targeting tagged VMs across $vmTargetDescription. The Automation identity will receive Virtual Machine Contributor at subscription scope."
 }
 
 $templatePath = Join-Path $PSScriptRoot 'infra\vm-schedule.json'
@@ -208,5 +233,5 @@ if ($WorkflowState -eq 'Enabled') {
 }
 
 Write-Output "Deployment complete. WorkflowState = $WorkflowState; DryRun = $DryRun."
-Write-Output "UK weekdays: start 08:00, stop/deallocate 19:00. Target: '$VmResourceGroupName', tag '$TagName' = '$TagValue'."
+Write-Output "UK weekdays: start 08:00, stop/deallocate 19:00. Target: $vmTargetDescription, tag '$TagName' = '$TagValue'."
 Write-Output 'Test both workflows with DryRun=true and check Automation job output before enabling live operations.'

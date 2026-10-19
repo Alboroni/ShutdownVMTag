@@ -1,181 +1,33 @@
-TAGGED VM WEEKDAY SCHEDULER
-=========================
+TAGGED VM WEEKDAY SCHEDULER - SETUP GUIDE
+=======================================
 
-Schedule (UK local time, automatic GMT/BST daylight-saving adjustments):
-  Monday-Friday 08:00: Start VMs matching the tag.
-  Monday-Friday 19:00: Stop and deallocate VMs matching the tag.
-  Saturday-Sunday: No scheduled runs.
-  Friday's shutdown lasts until Monday's startup.
+The complete setup and operations guide is in README.md in this directory.
+Open it in VS Code and use "Markdown: Open Preview" for formatted instructions.
 
-The ARM template creates two Consumption Logic Apps because each workflow has
-its own recurrence trigger. Both call the SAME published Automation runbook.
-No webhook secrets, API connection resources or stored passwords are required.
-The template does not create an Automation account or upload/publish the runbook.
-For a NEW resource group and account, use Deploy-VmSchedule.ps1 instead (below).
+The guide covers:
+- Prerequisites, sign-in, provider registration and managed-identity permissions.
+- Creating the resource group, Automation account, runtime, runbook and Logic Apps.
+- Single-subscription setup: omit -VmSubscriptionId.
+- All resource groups in that subscription: omit -VmResourceGroupName (the default).
+- Optional cross-subscription setup in the same Entra tenant.
+- Tagging VMs, preview testing, enabling live schedules and pausing safely.
+- Existing-account setup, parameter reference, monitoring and troubleshooting.
 
-QUICK DEPLOYMENT: CREATE THE RESOURCE GROUP AND AUTOMATION ACCOUNT TOO
+Schedule: start at 08:00 and stop/deallocate at 19:00, Monday-Friday, UK GMT/BST.
+No weekend runs. Deployment defaults to disabled schedules with DryRun=true.
 
-Prerequisites on the machine running the deployment:
-  Install-Module Az.Accounts, Az.Resources, Az.Automation -Scope CurrentUser
-  Connect-AzAccount
+Single subscription:
+  -SubscriptionId identifies BOTH the hosting and VM subscription by default.
+  -ResourceGroupName identifies the scheduling resource group.
+  All VM resource groups are searched by default, filtering by the configured tag.
+  Optionally supply -VmResourceGroupName to restrict the search to one group.
+  Subscription-wide targeting grants the Automation identity VM permissions on
+  the entire VM subscription; the runbook applies the tag filter.
 
-Run from the folder containing this solution (replace subscription and names):
+Cross-subscription:
+  Add -VmSubscriptionId to select a different VM subscription in the same tenant.
 
-  .\Deploy-VmSchedule.ps1 `
-    -SubscriptionId '00000000-0000-0000-0000-000000000001' `
-    -ResourceGroupName 'rg-vm-schedule' `
-    -Location 'uksouth' `
-    -AutomationAccountName 'aa-vm-schedule' `
-    -VmResourceGroupName 'rg-dev-vms' `
-    -TagName 'AutoShutdown' `
-    -TagValue 'Enabled' `
-    -ScheduleStartTime '2026-11-02T00:00:00'
+Deploy-VmSchedule.ps1 creates the complete solution. The raw ARM template at
+infra\vm-schedule.json creates only the two Logic Apps.
 
-Choose a FUTURE UK local start date, at least five minutes ahead.
-The example date is only an example; update it before running.
-The script targets existing VMs in the specified VM resource group. By default,
-they are in the deployment subscription. To target another subscription in the
-same Entra tenant, pass -VmSubscriptionId '<VM-subscription-ID>'.
-It does not create VMs.
-It creates/updates the RG, account, PowerShell 7.4 runtime with Microsoft's
-documented Az 12.3.0 default package bundle, shared start/stop runbook, both
-Logic Apps, and the managed-identity permissions described below.
-The selected Azure region must support Automation PowerShell 7.4 and Logic Apps.
-Run under an identity with resource deployment AND role assignment permissions.
-Required resource providers Microsoft.Automation and Microsoft.Logic must be
-registered in the subscription.
-
-The initial deployment is disabled with DryRun=true. Enable the Logic Apps in the
-portal for preview tests and inspect the Automation job output. For live use,
-rerun the SAME command/names with a new future ScheduleStartTime and append:
-
-  -DryRun $false -WorkflowState Enabled
-
-Deployment verifies the published runbook's content against the local source.
-It uses a PATCH to associate the runtime without replacing imported script content.
-
-Redeployments temporarily disable the two schedulers while configuration and
-permissions are updated. Existing resources with these names will be updated:
-use dedicated names, not an unrelated production Automation account.
-Do not rerun while a scheduled run is due or a runbook job is active.
-
-MORNING STARTUP SCRIPT
-
-ShutdownVMTag.ps1 handles BOTH operations so tag matching and permissions remain
-consistent. No second runbook or duplicated VM-selection code is needed:
-  Action = Start: starts matching VMs (used by the 08:00 Logic App).
-  Action = Stop: stops/deallocates matching VMs (used by the 19:00 Logic App).
-
-To test a morning start in the Automation account's Test pane:
-  SubscriptionId = your subscription ID
-  TagName = AutoShutdown
-  TagValue = Enabled
-  ResourceGroupName = rg-dev-vms
-  Action = Start
-  DryRun = true
-
-Set DryRun=false only when you intend to start the selected VMs.
-Do not execute the runbook directly on your workstation unless that workstation
-has an Azure managed identity; the runbook authenticates with -Identity.
-
-1. PREPARE THE RUNBOOK
-
-Enable the Automation account's system-assigned managed identity.
-Grant it Virtual Machine Contributor at the target VM resource group scope.
-If searching the whole subscription, grant appropriate read and VM operation
-permissions across that subscription instead.
-Add Az.Accounts and Az.Compute to its PowerShell 7.4 runtime environment.
-Import/update ShutdownVMTag.ps1 as a PowerShell runbook named ShutdownVMTag
-(or supply a different runbookName parameter). Publish the updated version.
-The updated script accepts Action = Start or Stop; Stop remains the default.
-Tag the VMs themselves, e.g. AutoShutdown = Enabled (value is case-sensitive).
-Test both actions with DryRun = true in the Automation Test pane.
-
-2. DEPLOY THE SCHEDULERS
-
-In Azure Portal, search "Deploy a custom template", select
-"Build your own template in the editor", and load infra\vm-schedule.json.
-Deploy into the SAME resource group/subscription as the existing Automation
-account. Select a region that supports Consumption Logic Apps.
-
-Required parameters:
-  automationAccountName: Existing Automation account.
-  scheduleStartTime: A FUTURE UK local date/time such as 2026-11-02T00:00:00.
-                     Replace the example with your intended future date.
-                     Do not append Z or an offset.
-
-Other parameters:
-  namePrefix: Defaults to tagged-vms.
-  runbookName: Defaults to ShutdownVMTag.
-  vmSubscriptionId: Defaults to the deployment subscription.
-  vmResourceGroupName: Strongly recommended to limit the target VM scope.
-                       Empty means all VMs in vmSubscriptionId are searched.
-  tagName / tagValue: Defaults to AutoShutdown / Enabled.
-  dryRun: Leave "true" for initial testing.
-  workflowState: Leave "Disabled" until permissions are ready.
-
-The start time prevents the Recurrence trigger's immediate first execution.
-Use a future start time again when enabling/redeploying for live operation.
-No Azure resources are deployed simply by saving these files locally.
-
-3. AUTHORIZE EACH LOGIC APP
-
-Open each deployed Logic App (tagged-vms-start and tagged-vms-stop).
-Its system-assigned managed identity is already enabled by the template.
-
-On the Automation account > Access control (IAM), assign:
-  Automation Job Operator
-to EACH Logic App's managed identity.
-
-On the published runbook > Access control (IAM), also assign:
-  Automation Runbook Operator
-to EACH Logic App's managed identity so it can read the selected runbook.
-Allow time for role assignments to propagate.
-Role assignments are deliberately not created by this template; the person
-making them needs role-assignment permissions.
-
-The Logic App identities submit Automation jobs. The Automation account identity
-starts/stops the VMs. These are separate identities with separate permissions.
-
-4. TEST, THEN ENABLE LIVE OPERATION
-
-With dryRun = "true", enable and manually run each Logic App once.
-In each Logic App's run history inspect Create_Automation_job and its job ID,
-then open Automation account > Jobs to confirm the preview output and parameters:
-  start workflow: Action = Start
-  stop workflow:  Action = Stop
-  SubscriptionId, TagName, TagValue and optional ResourceGroupName match yours.
-Check that ONLY the intended VMs are selected.
-
-Disable both workflows after testing. Redeploy the same template/namePrefix
-with dryRun = "false", workflowState = "Enabled", and scheduleStartTime set
-to a future local date/time when the schedules should begin.
-Publishing the new runbook and changing dryRun are both required for live use.
-Remove/disable any older Automation schedules targeting these VMs to avoid
-duplicate or conflicting jobs.
-
-OPERATIONS AND LIMITATIONS
-
-The Logic App succeeds when Azure accepts the Automation job, NOT when the VM
-operation completes. Use the returned automationJobId to inspect Automation Jobs.
-Configure Azure Monitor alerts for failed/suspended/stopped Automation jobs and
-failed Logic App runs. A rejected HTTP request fails the Logic App action.
-Transient HTTP errors retry with the same job ID to avoid duplicate submissions.
-
-This is a scheduled start/stop solution, not continuous enforcement:
-- A VM manually started on Saturday is not automatically stopped that weekend.
-- Deploying on Saturday does not itself stop already-running VMs.
-- Friday shutdown must succeed for the VMs to remain off over the weekend.
-- A tag removed before Friday shutdown means that VM will no longer be selected.
-Do not manually run the Start workflow over the weekend unless intentional.
-There is no public holiday exclusion. Azure trigger execution can be slightly
-later than the scheduled minute, and VM startup/shutdown takes additional time.
-Deallocation stops VM compute billing, but disks and other resources may still
-incur charges. Starting does not guarantee application readiness at 08:00.
-
-REFERENCES
-
-https://learn.microsoft.com/en-us/azure/connectors/connectors-native-recurrence
-https://learn.microsoft.com/en-us/rest/api/automation/job/create?view=rest-automation-2024-10-23
-https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/management-and-governance
-https://learn.microsoft.com/en-us/azure/automation/manage-runtime-environment
+Saving or reading the guide does not redeploy or enable any existing resources.

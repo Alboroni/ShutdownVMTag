@@ -17,6 +17,11 @@ Describe 'ShutdownVMTag runbook' {
             [pscustomobject]@{ Name = 'wrong-value'; ResourceGroupName = 'rg-dev'; Id = '/vm/wrong-value'; Tags = @{ AutoShutdown = 'Disabled' } }
             [pscustomobject]@{ Name = 'untagged'; ResourceGroupName = 'rg-dev'; Id = '/vm/untagged'; Tags = $null }
         )
+        $multiGroupVms = @(
+            [pscustomobject]@{ Name = 'shared-name'; ResourceGroupName = 'rg-one'; Id = '/rg-one/shared-name'; Tags = @{ AutoShutdown = 'Enabled' } }
+            [pscustomobject]@{ Name = 'shared-name'; ResourceGroupName = 'rg-two'; Id = '/rg-two/shared-name'; Tags = @{ AutoShutdown = 'Enabled' } }
+            [pscustomobject]@{ Name = 'unmatched'; ResourceGroupName = 'rg-three'; Id = '/rg-three/unmatched'; Tags = @{ AutoShutdown = 'Disabled' } }
+        )
 
         Mock Disable-AzContextAutosave {}
         Mock Connect-AzAccount { [pscustomobject]@{ Context = $testAzureContext } }
@@ -57,6 +62,40 @@ Describe 'ShutdownVMTag runbook' {
         & $runbookPath @parameters -ResourceGroupName 'rg-dev'
 
         Assert-MockCalled Get-AzVM -Times 1 -Exactly -Scope It -ParameterFilter { $ResourceGroupName -eq 'rg-dev' }
+    }
+
+    It 'stops matching VMs in different groups and keeps each VM resource group' {
+        Mock Get-AzVM { $multiGroupVms }
+
+        $output = & $runbookPath @parameters -DryRun $false
+
+        ($output -join "`n") | Should Match 'Found 2 VM'
+        Assert-MockCalled Get-AzVM -Times 1 -Exactly -Scope It -ParameterFilter { -not $ResourceGroupName }
+        Assert-MockCalled Stop-AzVM -Times 2 -Exactly -Scope It
+        Assert-MockCalled Stop-AzVM -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Name -eq 'shared-name' -and $ResourceGroupName -eq 'rg-one'
+        }
+        Assert-MockCalled Stop-AzVM -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Name -eq 'shared-name' -and $ResourceGroupName -eq 'rg-two'
+        }
+        Assert-MockCalled Start-AzVM -Times 0 -Exactly -Scope It
+    }
+
+    It 'starts matching VMs in different groups without starting unmatched VMs' {
+        Mock Get-AzVM { $multiGroupVms }
+
+        $output = & $runbookPath @parameters -Action Start -DryRun $false
+
+        ($output -join "`n") | Should Match 'Found 2 VM'
+        Assert-MockCalled Get-AzVM -Times 1 -Exactly -Scope It -ParameterFilter { -not $ResourceGroupName }
+        Assert-MockCalled Start-AzVM -Times 2 -Exactly -Scope It
+        Assert-MockCalled Start-AzVM -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Name -eq 'shared-name' -and $ResourceGroupName -eq 'rg-one'
+        }
+        Assert-MockCalled Start-AzVM -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Name -eq 'shared-name' -and $ResourceGroupName -eq 'rg-two'
+        }
+        Assert-MockCalled Stop-AzVM -Times 0 -Exactly -Scope It
     }
 
     It 'treats wildcard characters in tag values literally' {

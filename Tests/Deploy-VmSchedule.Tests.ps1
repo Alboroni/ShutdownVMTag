@@ -15,7 +15,7 @@ function New-AzResourceGroupDeployment {
     throw 'New-AzResourceGroupDeployment must be mocked.'
 }
 
-Describe 'Cross-subscription VM scheduler deployment' {
+Describe 'VM scheduler deployment' {
     BeforeEach {
         $deploymentArguments = @{
             SubscriptionId = '00000000-0000-0000-0000-000000000001'
@@ -77,6 +77,83 @@ Describe 'Cross-subscription VM scheduler deployment' {
             $Scope -eq '/subscriptions/00000000-0000-0000-0000-000000000002/resourceGroups/rg-vms' -and
             $DefaultProfile.DefaultContext.Subscription.Id -eq '00000000-0000-0000-0000-000000000002'
         }
+    }
+
+    It 'defaults the VM subscription to the deployment subscription when omitted' {
+        $deploymentArguments.Remove('VmSubscriptionId')
+
+        & $deploymentPath @deploymentArguments
+
+        Assert-MockCalled Get-AzResourceGroup -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Name -eq 'rg-vms' -and
+            $DefaultProfile.DefaultContext.Subscription.Id -eq '00000000-0000-0000-0000-000000000001'
+        }
+        Assert-MockCalled New-AzRoleAssignment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $RoleDefinitionName -eq 'Virtual Machine Contributor' -and
+            $Scope -eq '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-vms' -and
+            $DefaultProfile.DefaultContext.Subscription.Id -eq '00000000-0000-0000-0000-000000000001'
+        }
+        Assert-MockCalled New-AzResourceGroupDeployment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $ResourceGroupName -eq 'rg-scheduler' -and
+            $TemplateParameterObject.vmSubscriptionId -eq '00000000-0000-0000-0000-000000000001' -and
+            $TemplateParameterObject.vmResourceGroupName -eq 'rg-vms'
+        }
+    }
+
+    It 'also accepts an explicit same-subscription VM target' {
+        $deploymentArguments.VmSubscriptionId = $deploymentArguments.SubscriptionId
+
+        & $deploymentPath @deploymentArguments
+
+        Assert-MockCalled New-AzRoleAssignment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $RoleDefinitionName -eq 'Virtual Machine Contributor' -and
+            $Scope -eq '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg-vms'
+        }
+        Assert-MockCalled New-AzResourceGroupDeployment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $TemplateParameterObject.vmSubscriptionId -eq '00000000-0000-0000-0000-000000000001'
+        }
+    }
+
+    It 'targets every resource group in the VM subscription when the group is omitted' {
+        $deploymentArguments.Remove('VmResourceGroupName')
+
+        & $deploymentPath @deploymentArguments
+
+        Assert-MockCalled Get-AzResourceGroup -Times 0 -Exactly -Scope It
+        Assert-MockCalled New-AzRoleAssignment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $RoleDefinitionName -eq 'Virtual Machine Contributor' -and
+            $Scope -eq '/subscriptions/00000000-0000-0000-0000-000000000002' -and
+            $DefaultProfile.DefaultContext.Subscription.Id -eq '00000000-0000-0000-0000-000000000002'
+        }
+        Assert-MockCalled New-AzResourceGroupDeployment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $TemplateParameterObject.vmSubscriptionId -eq '00000000-0000-0000-0000-000000000002' -and
+            $TemplateParameterObject.vmResourceGroupName -ceq ''
+        }
+    }
+
+    It 'defaults to all groups in the hosting subscription when both VM overrides are omitted' {
+        $deploymentArguments.Remove('VmResourceGroupName')
+        $deploymentArguments.Remove('VmSubscriptionId')
+
+        & $deploymentPath @deploymentArguments
+
+        Assert-MockCalled Get-AzResourceGroup -Times 0 -Exactly -Scope It
+        Assert-MockCalled New-AzRoleAssignment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $RoleDefinitionName -eq 'Virtual Machine Contributor' -and
+            $Scope -eq '/subscriptions/00000000-0000-0000-0000-000000000001'
+        }
+        Assert-MockCalled New-AzResourceGroupDeployment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $TemplateParameterObject.vmSubscriptionId -eq '00000000-0000-0000-0000-000000000001' -and
+            $TemplateParameterObject.vmResourceGroupName -ceq ''
+        }
+    }
+
+    It 'rejects an explicitly empty group instead of silently widening the scope' {
+        $deploymentArguments.VmResourceGroupName = ''
+
+        { & $deploymentPath @deploymentArguments } | Should Throw
+        Assert-MockCalled New-AzResourceGroup -Times 0 -Exactly -Scope It
+        Assert-MockCalled New-AzRoleAssignment -Times 0 -Exactly -Scope It
     }
 
     It 'deploys disabled preview workflows with the VM subscription passed to the runbook' {
