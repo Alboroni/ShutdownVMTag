@@ -33,8 +33,10 @@ Run from the folder containing this solution (replace subscription and names):
 
 Choose a FUTURE UK local start date, at least five minutes ahead.
 The example date is only an example; update it before running.
-The script targets existing VMs in the specified VM resource group, in the SAME
-subscription as the new Automation account. It does not create VMs.
+The script targets existing VMs in the specified VM resource group. By default,
+they are in the deployment subscription. To target another subscription in the
+same Entra tenant, pass -VmSubscriptionId '<VM-subscription-ID>'.
+It does not create VMs.
 It creates/updates the RG, account, PowerShell 7.4 runtime with Microsoft's
 documented Az 12.3.0 default package bundle, shared start/stop runbook, both
 Logic Apps, and the managed-identity permissions described below.

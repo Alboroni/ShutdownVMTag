@@ -7,6 +7,7 @@ Run from your workstation or Cloud Shell after Connect-AzAccount.
 Creates Azure resources and RBAC assignments only when you execute this script.
 Requires resource deployment and role-assignment rights on the deployment
 subscription and target VM resource group. Targets existing VMs, not new VMs.
+VmSubscriptionId can select a different VM subscription in the same Entra tenant.
 Defaults to disabled Logic Apps and preview-only VM operations.
 .EXAMPLE
 .\Deploy-VmSchedule.ps1 -SubscriptionId '00000000-0000-0000-0000-000000000001' -ResourceGroupName 'rg-vm-schedule' -Location 'uksouth' -AutomationAccountName 'aa-vm-schedule' -VmResourceGroupName 'rg-dev-vms' -ScheduleStartTime '2026-11-02T00:00:00'
@@ -31,6 +32,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string] $VmResourceGroupName,
+
+    [guid] $VmSubscriptionId = $SubscriptionId,
 
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$')]
@@ -62,10 +65,15 @@ if ([System.TimeZoneInfo]::ConvertTimeToUtc($localStart, $ukTimeZone) -le [datet
     throw 'ScheduleStartTime must be more than five minutes in the future, in UK local time.'
 }
 
-$context = Set-AzContext -SubscriptionId $SubscriptionId.ToString() -ErrorAction Stop
+$currentContext = Get-AzContext -ErrorAction Stop
+if ($null -eq $currentContext) {
+    throw 'Sign in with Connect-AzAccount before running the deployment.'
+}
+$context = Set-AzContext -SubscriptionId $SubscriptionId.ToString() -TenantId $currentContext.Tenant.Id -Scope Process -ErrorAction Stop
+$vmContext = Set-AzContext -SubscriptionId $VmSubscriptionId.ToString() -TenantId $context.Tenant.Id -Scope Process -ErrorAction Stop
 $subscriptionScope = "/subscriptions/$SubscriptionId"
-$vmScope = "$subscriptionScope/resourceGroups/$VmResourceGroupName"
-$vmGroup = Get-AzResourceGroup -Name $VmResourceGroupName -DefaultProfile $context -ErrorAction Stop
+$vmScope = "/subscriptions/$VmSubscriptionId/resourceGroups/$VmResourceGroupName"
+$vmGroup = Get-AzResourceGroup -Name $VmResourceGroupName -DefaultProfile $vmContext -ErrorAction Stop
 if ($null -eq $vmGroup) {
     throw "Target VM resource group '$VmResourceGroupName' was not found."
 }
@@ -100,12 +108,17 @@ function Invoke-AutomationRequest {
 }
 
 function Grant-ManagedIdentityRole {
-    param([string] $PrincipalId, [string] $RoleName, [string] $Scope)
+    param(
+        [string] $PrincipalId,
+        [string] $RoleName,
+        [string] $Scope,
+        [Microsoft.Azure.Commands.Common.Authentication.Abstractions.Core.IAzureContextContainer] $Profile = $context
+    )
 
-    $existing = @(Get-AzRoleAssignment -ObjectId $PrincipalId -RoleDefinitionName $RoleName -Scope $Scope -DefaultProfile $context -ErrorAction Stop |
+    $existing = @(Get-AzRoleAssignment -ObjectId $PrincipalId -RoleDefinitionName $RoleName -Scope $Scope -DefaultProfile $Profile -ErrorAction Stop |
         Where-Object { $_.Scope -eq $Scope })
     if ($existing.Count -eq 0) {
-        New-AzRoleAssignment -ObjectId $PrincipalId -ObjectType ServicePrincipal -RoleDefinitionName $RoleName -Scope $Scope -DefaultProfile $context -ErrorAction Stop | Out-Null
+        New-AzRoleAssignment -ObjectId $PrincipalId -ObjectType ServicePrincipal -RoleDefinitionName $RoleName -Scope $Scope -DefaultProfile $Profile -ErrorAction Stop | Out-Null
     }
 }
 
@@ -152,14 +165,14 @@ if ($published.properties.state -ne 'Published' -or $published.properties.runtim
     throw 'Runbook publication/runtime verification failed. Schedulers have not been enabled.'
 }
 
-Grant-ManagedIdentityRole -PrincipalId $account.identity.principalId -RoleName 'Virtual Machine Contributor' -Scope $vmScope
+Grant-ManagedIdentityRole -PrincipalId $account.identity.principalId -RoleName 'Virtual Machine Contributor' -Scope $vmScope -Profile $vmContext
 
 $deploymentParameters = @{
     namePrefix = $NamePrefix
     location = $Location
     automationAccountName = $AutomationAccountName
     runbookName = $runbookName
-    vmSubscriptionId = $SubscriptionId.ToString()
+    vmSubscriptionId = $VmSubscriptionId.ToString()
     vmResourceGroupName = $VmResourceGroupName
     tagName = $TagName
     tagValue = $TagValue
