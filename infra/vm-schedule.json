@@ -1,0 +1,172 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "tagged-vms",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "automationAccountName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Existing Automation account in the deployment resource group and subscription."
+      }
+    },
+    "runbookName": {
+      "type": "string",
+      "defaultValue": "ShutdownVMTag"
+    },
+    "vmSubscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]"
+    },
+    "vmResourceGroupName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional VM resource group; empty searches the whole VM subscription."
+      }
+    },
+    "tagName": {
+      "type": "string",
+      "defaultValue": "AutoShutdown",
+      "minLength": 1
+    },
+    "tagValue": {
+      "type": "string",
+      "defaultValue": "Enabled",
+      "minLength": 1
+    },
+    "scheduleStartTime": {
+      "type": "string",
+      "metadata": {
+        "description": "Future UK local date/time, e.g. 2026-11-02T00:00:00, without Z or UTC offset. Prevents immediate execution on deployment/enable."
+      }
+    },
+    "dryRun": {
+      "type": "string",
+      "defaultValue": "true",
+      "allowedValues": ["true", "false"],
+      "metadata": {
+        "description": "Automation job parameters are serialized strings. Set false only after checking preview jobs."
+      }
+    },
+    "workflowState": {
+      "type": "string",
+      "defaultValue": "Disabled",
+      "allowedValues": ["Disabled", "Enabled"]
+    }
+  },
+  "variables": {
+    "schedules": [
+      { "suffix": "start", "action": "Start", "hour": 8 },
+      { "suffix": "stop", "action": "Stop", "hour": 19 }
+    ],
+    "automationAccountId": "[resourceId('Microsoft.Automation/automationAccounts', parameters('automationAccountName'))]",
+    "baseRunbookParameters": {
+      "SubscriptionId": "[parameters('vmSubscriptionId')]",
+      "TagName": "[parameters('tagName')]",
+      "TagValue": "[parameters('tagValue')]",
+      "DryRun": "[parameters('dryRun')]"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[concat(parameters('namePrefix'), '-', variables('schedules')[copyIndex()].suffix)]",
+      "location": "[parameters('location')]",
+      "copy": { "name": "scheduledWorkflows", "count": 2 },
+      "identity": { "type": "SystemAssigned" },
+      "properties": {
+        "state": "[parameters('workflowState')]",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "automationAccountId": { "type": "String" },
+            "runbookName": { "type": "String" },
+            "jobParameters": { "type": "Object" }
+          },
+          "triggers": {
+            "Weekday_schedule": {
+              "type": "Recurrence",
+              "recurrence": {
+                "frequency": "Week",
+                "interval": 1,
+                "timeZone": "GMT Standard Time",
+                "startTime": "[parameters('scheduleStartTime')]",
+                "schedule": {
+                  "weekDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+                  "hours": ["[variables('schedules')[copyIndex()].hour]"],
+                  "minutes": [0]
+                }
+              }
+            }
+          },
+          "actions": {
+            "Job_id": {
+              "type": "Compose",
+              "inputs": "@guid()",
+              "runAfter": {}
+            },
+            "Create_Automation_job": {
+              "type": "Http",
+              "runAfter": { "Job_id": ["Succeeded"] },
+              "inputs": {
+                "method": "PUT",
+                "uri": "@concat('https://management.azure.com', parameters('automationAccountId'), '/jobs/', outputs('Job_id'), '?api-version=2024-10-23')",
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "audience": "https://management.azure.com/"
+                },
+                "headers": { "Content-Type": "application/json" },
+                "body": {
+                  "properties": {
+                    "runbook": { "name": "@parameters('runbookName')" },
+                    "parameters": "@parameters('jobParameters')"
+                  }
+                },
+                "retryPolicy": {
+                  "type": "exponential",
+                  "count": 4,
+                  "interval": "PT10S"
+                }
+              }
+            }
+          },
+          "outputs": {
+            "automationJobId": {
+              "type": "String",
+              "value": "@outputs('Job_id')"
+            }
+          }
+        },
+        "parameters": {
+          "automationAccountId": { "value": "[variables('automationAccountId')]" },
+          "runbookName": { "value": "[parameters('runbookName')]" },
+          "jobParameters": {
+            "value": "[union(variables('baseRunbookParameters'), createObject('Action', variables('schedules')[copyIndex()].action), if(empty(parameters('vmResourceGroupName')), createObject(), createObject('ResourceGroupName', parameters('vmResourceGroupName'))))]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "startLogicAppName": {
+      "type": "string",
+      "value": "[concat(parameters('namePrefix'), '-start')]"
+    },
+    "stopLogicAppName": {
+      "type": "string",
+      "value": "[concat(parameters('namePrefix'), '-stop')]"
+    }
+  }
+}
