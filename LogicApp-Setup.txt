@@ -51,6 +51,9 @@ rerun the SAME command/names with a new future ScheduleStartTime and append:
 
   -DryRun $false -WorkflowState Enabled
 
+Deployment verifies the published runbook's content against the local source.
+It uses a PATCH to associate the runtime without replacing imported script content.
+
 Redeployments temporarily disable the two schedulers while configuration and
 permissions are updated. Existing resources with these names will be updated:
 use dedicated names, not an unrelated production Automation account.

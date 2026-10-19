@@ -149,20 +149,21 @@ Invoke-AutomationRequest -Path "$accountPath/runtimeEnvironments/$runtimeName" -
 
 Write-Output 'Importing the shared start/stop runbook.'
 Import-AzAutomationRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $runbookName -Path $runbookPath -Type PowerShell -Force -DefaultProfile $context -ErrorAction Stop | Out-Null
-Invoke-AutomationRequest -Path $runbookId -Method PUT -Body @{
-    location = $Location
+Invoke-AutomationRequest -Path $runbookId -Method PATCH -Body @{
     properties = @{
-        runbookType = 'PowerShell'
+        type = 'PowerShell'
         runtimeEnvironment = $runtimeName
-        logProgress = $false
-        logVerbose = $false
-        description = 'Start or stop tagged VMs using managed identity.'
     }
 } | Out-Null
 Publish-AzAutomationRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $AutomationAccountName -Name $runbookName -DefaultProfile $context -ErrorAction Stop | Out-Null
 $published = (Invoke-AutomationRequest -Path $runbookId -Method GET).Content | ConvertFrom-Json
 if ($published.properties.state -ne 'Published' -or $published.properties.runtimeEnvironment -ne $runtimeName) {
     throw 'Runbook publication/runtime verification failed. Schedulers have not been enabled.'
+}
+$publishedContent = (Invoke-AutomationRequest -Path "$runbookId/content" -Method GET).Content
+$sourceContent = Get-Content -LiteralPath $runbookPath -Raw
+if ($publishedContent.TrimStart([char]0xFEFF).Replace("`r`n", "`n").Trim() -cne $sourceContent.TrimStart([char]0xFEFF).Replace("`r`n", "`n").Trim()) {
+    throw 'Published runbook content does not match the local source. Schedulers have not been enabled.'
 }
 
 Grant-ManagedIdentityRole -PrincipalId $account.identity.principalId -RoleName 'Virtual Machine Contributor' -Scope $vmScope -Profile $vmContext
